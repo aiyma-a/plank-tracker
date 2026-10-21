@@ -229,6 +229,7 @@
         let currentMonth = new Date();
         let completedDays = JSON.parse(localStorage.getItem('plankDays') || '{}');
         let timeLeft = 60; let timerId = null;
+        let countdownId = null; let elapsedSeconds = 0;
         let restTimeLeft = 120; let restTimerId = null;
         let activeSelectedDateKey = null;
         let activeDisplayDateObj = null;
@@ -277,12 +278,19 @@
                 return;
             }
 
-            if (timerId) { 
+            if (countdownId) {
+                // Pressed during the 3-2-1 countdown: cancel it instead of starting a second timer
+                clearInterval(countdownId);
+                countdownId = null;
+                if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+                startBtn.innerText = 'Start';
+            } else if (timerId) { 
                 clearInterval(timerId); 
                 timerId = null; 
                 startBtn.innerText = 'Resume'; 
             } else { 
                 if (startBtn.innerText === 'Start' || startBtn.innerText === 'Resume') {
+                    if (startBtn.innerText === 'Start') elapsedSeconds = 0;
                     startBtn.innerText = 'Pause';
                     playCountdownAndStart();
                 } else {
@@ -298,12 +306,13 @@
 
             speakText(counts[index]);
             
-            const countdownInterval = setInterval(() => {
+            countdownId = setInterval(() => {
                 index++;
                 if (index < counts.length) {
                     speakText(counts[index]);
                 } else {
-                    clearInterval(countdownInterval);
+                    clearInterval(countdownId);
+                    countdownId = null;
                     startInterval();
                 }
             }, 1000);
@@ -312,6 +321,7 @@
         function startInterval() {
             timerId = setInterval(() => {
                 timeLeft--;
+                elapsedSeconds++;
                 updateTimerDisplay();
                 
                 if (timeLeft > 0 && timeLeft % 30 === 0) {
@@ -327,6 +337,8 @@
         }
 
         function stopTimer() { 
+            clearInterval(countdownId); 
+            countdownId = null; 
             clearInterval(timerId); 
             timerId = null; 
             timeLeft = 60; 
@@ -647,7 +659,7 @@
         }
 
         /** UI & ACTIONS **/
-        function changeMonth(delta) { currentMonth.setMonth(currentMonth.getMonth() + delta); renderCalendar(); }
+        function changeMonth(delta) { currentMonth = new Date(currentMonth.getFullYear(), currentMonth.getMonth() + delta, 1); renderCalendar(); }
         function switchTab(t) { document.querySelectorAll('.tab-content').forEach(p => p.classList.remove('active')); document.getElementById('page-' + t).classList.add('active'); document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.toggle('text-purple-600', btn.innerText.toLowerCase() === t)); }
         
         function setExercise(type) {
@@ -661,7 +673,9 @@
             const exerciseType = document.getElementById('exercise-title').innerText;
             const volumeLabel = exerciseType === 'Plank' ? "Timed Plank Session" : "Dynamic Push-up Set";
             
-            addLog(`${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`, exerciseType, timeLeft, volumeLabel); 
+            if (elapsedSeconds <= 0) { alert("Run the timer first, then save."); return; }
+            addLog(`${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`, exerciseType, elapsedSeconds, volumeLabel); 
+            elapsedSeconds = 0; 
             alert("Workout automatically saved to calendar!"); 
             stopTimer(); 
             triggerRestTimer(); // Trigger rest timer upon saving as well
