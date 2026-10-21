@@ -4,7 +4,7 @@ const http = require('http');
 
 const PORT = process.env.PORT || 8080;
 const API_KEY = process.env.GEMINI_API_KEY;
-const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_FRAMES = 12;
