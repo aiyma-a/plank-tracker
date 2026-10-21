@@ -86,7 +86,7 @@
             </div>
             
             <div id="chat-messages" class="h-32 overflow-y-auto bg-gray-50 p-3 rounded-2xl mb-3 text-sm space-y-2">
-                <div class="text-gray-500 italic">"Hey! Ready for your workout? Turn on your camera and ask me for form tips!"</div>
+                <div class="text-gray-500 italic">"Hey! Turn on your camera and start the timer. I will watch your form and give feedback when the set ends. Then ask me anything!"</div>
             </div>
 
             <div class="flex gap-2">
@@ -230,6 +230,10 @@
         let completedDays = JSON.parse(localStorage.getItem('plankDays') || '{}');
         let timeLeft = 60; let timerId = null;
         let countdownId = null; let elapsedSeconds = 0;
+        // AI coach: set COACH_URL to the deployed coach-api address (empty = coach switched off)
+        const COACH_URL = '';
+        const COACH_FRAME_EVERY_SEC = 10; const COACH_MAX_FRAMES = 12;
+        let coachFrames = []; let lastSetSeconds = 0; let latestHips = 'unknown'; let cameraOn = false; let coachBusy = false;
         let restTimeLeft = 120; let restTimerId = null;
         let activeSelectedDateKey = null;
         let activeDisplayDateObj = null;
@@ -290,7 +294,7 @@
                 startBtn.innerText = 'Resume'; 
             } else { 
                 if (startBtn.innerText === 'Start' || startBtn.innerText === 'Resume') {
-                    if (startBtn.innerText === 'Start') elapsedSeconds = 0;
+                    if (startBtn.innerText === 'Start') { elapsedSeconds = 0; lastSetSeconds = 0; coachFrames = []; }
                     startBtn.innerText = 'Pause';
                     playCountdownAndStart();
                 } else {
@@ -322,6 +326,8 @@
             timerId = setInterval(() => {
                 timeLeft--;
                 elapsedSeconds++;
+                lastSetSeconds = elapsedSeconds;
+                if (elapsedSeconds % COACH_FRAME_EVERY_SEC === 0) captureCoachFrame();
                 updateTimerDisplay();
                 
                 if (timeLeft > 0 && timeLeft % 30 === 0) {
@@ -331,6 +337,7 @@
                 if (timeLeft <= 0) {
                     speakText("Yay! Time's up! You did amazing!");
                     stopTimer();
+                    coachReview();
                     triggerRestTimer(); // Automatically start rest period post workout
                 }
             }, 1000);
@@ -773,6 +780,7 @@
                 canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
                 
                 let isFormGood = true;
+                latestHips = 'unknown';
 
                 if (results.poseLandmarks) {
                     const landmarks = results.poseLandmarks;
@@ -786,6 +794,7 @@
                         if (shoulder && hip && ankle) {
                             const expectedHipY = shoulder.y + (ankle.y - shoulder.y) * 0.5;
                             const hipDeviation = Math.abs(hip.y - expectedHipY);
+                            latestHips = hipDeviation > 0.12 ? (hip.y > expectedHipY ? 'sagging' : 'piking') : 'ok';
                             if (hipDeviation > 0.12) {
                                 isFormGood = false;
                             }
@@ -794,6 +803,7 @@
                         if (shoulder && hip && ankle) {
                             const expectedHipY = shoulder.y + (ankle.y - shoulder.y) * 0.5;
                             const hipDeviation = Math.abs(hip.y - expectedHipY);
+                            latestHips = hipDeviation > 0.15 ? (hip.y > expectedHipY ? 'sagging' : 'piking') : 'ok';
                             if (hipDeviation > 0.15) {
                                 isFormGood = false;
                             }
@@ -828,96 +838,85 @@
                 height: 480
             });
             camera.start();
+            cameraOn = true;
         }
 
-        /** GEMINI CHAT INTEGRATION WITH DYNAMIC SESSION STATE & WEBCAM VISION **/
-        async function sendChatMessage() {
-            const inputField = document.getElementById('chat-input');
-            const chatMessages = document.getElementById('chat-messages');
-            const userText = inputField.value.trim();
-
-            if (!userText) return;
-
-            chatMessages.innerHTML += `<div class="text-right"><span class="inline-block bg-purple-600 text-white px-3 py-1.5 rounded-2xl text-xs max-w-[80%] text-left">${userText}</span></div>`;
-            inputField.value = '';
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-
-            const typingId = 'typing-' + Date.now();
-            chatMessages.innerHTML += `<div id="${typingId}" class="text-left"><span class="inline-block bg-gray-200 text-gray-600 px-3 py-1.5 rounded-2xl text-xs">Coach is reviewing your session...</span></div>`;
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-
-            try {
-                const apiKey = "YOUR_GEMINI_API_KEY"; 
-                const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-
-                const currentExercise = document.getElementById('exercise-title').innerText;
-                const currentTimerValue = timeLeft;
-                
-                const today = new Date();
-                const todayKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
-                const todaysLogs = completedDays[todayKey] || [];
-                const logSummary = todaysLogs.length > 0 
-                    ? JSON.stringify(todaysLogs) 
-                    : "No sets saved yet today.";
-
-                const systemPrompt = `You are an expert, encouraging fitness trainer AI in a workout app called Workout Pro. 
-Current Context:
-- The user is working on: ${currentExercise}
-- Current timer/duration setting: ${currentTimerValue} seconds left or targeted.
-- Today's completed workout logs: ${logSummary}
-
-Look closely at the provided image of the user to evaluate their physical form, posture, or alignment right now. Give a dynamic, personalized, concise response that directly answers their question based on what they just finished or how they are positioned in the camera frame. Avoid repeating generic templates; tailor your advice specifically to their current state.`;
-
-                const videoElement = document.getElementById('webcam');
-                let imagePart = null;
-
-                if (videoElement && videoElement.readyState === videoElement.HAVE_ENOUGH_DATA) {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = videoElement.videoWidth || 480;
-                    canvas.height = videoElement.videoHeight || 480;
-                    const ctx = canvas.getContext('2d');
-                    
-                    ctx.translate(canvas.width, 0);
-                    ctx.scale(-1, 1);
-                    ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-                    
-                    const base64Data = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-                    
-                    imagePart = {
-                        inline_data: {
-                            mime_type: "image/jpeg",
-                            data: base64Data
-                        }
-                    };
-                }
-
-                const partsArray = [{ text: systemPrompt + "\n\nUser Question: " + userText }];
-                if (imagePart) {
-                    partsArray.push(imagePart);
-                }
-
-                const payload = {
-                    contents: [{ role: "user", parts: partsArray }]
-                };
-
-                const response = await fetch(endpoint, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload)
-                });
-
-                const data = await response.json();
-                const aiReply = data.candidates?.[0]?.content?.parts?.[0]?.text || "Keep your core tight and maintain your form!";
-
-                document.getElementById(typingId).remove();
-                chatMessages.innerHTML += `<div class="text-left"><span class="inline-block bg-purple-100 text-purple-900 px-3 py-1.5 rounded-2xl text-xs max-w-[80%]" >${aiReply}</span></div>`;
-            } catch (error) {
-                console.error("Chat error:", error);
-                document.getElementById(typingId).remove();
-                chatMessages.innerHTML += `<div class="text-left"><span class="inline-block bg-red-100 text-red-600 px-3 py-1.5 rounded-2xl text-xs">Oops, couldn't reach the coach. Try again!</span></div>`;
+        /** AI COACH: photos during the set, review at the end, follow-up questions **/
+        function captureCoachFrame() {
+            const video = document.getElementById('webcam');
+            if (!COACH_URL || !cameraOn || !video || video.readyState < 2 || !video.videoWidth) return;
+            const canvas = document.createElement('canvas');
+            canvas.width = 320;
+            canvas.height = Math.round(320 * video.videoHeight / video.videoWidth);
+            canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+            coachFrames.push({ t: elapsedSeconds, hips: latestHips, img: canvas.toDataURL('image/jpeg', 0.6).split(',')[1] });
+            if (coachFrames.length > COACH_MAX_FRAMES) {
+                // keep the first and last photos, drop every second one in between
+                coachFrames = coachFrames.filter((f, i) => i === 0 || i === coachFrames.length - 1 || i % 2 === 0);
             }
+        }
 
-            chatMessages.scrollTop = chatMessages.scrollHeight;
+        function addChatBubble(text, kind) {
+            const box = document.getElementById('chat-messages');
+            const row = document.createElement('div');
+            const bubble = document.createElement('span');
+            const styles = {
+                user: 'inline-block bg-purple-600 text-white px-3 py-1.5 rounded-2xl text-xs max-w-[80%] text-left',
+                coach: 'inline-block bg-purple-100 text-purple-900 px-3 py-1.5 rounded-2xl text-xs max-w-[80%]',
+                wait: 'inline-block bg-gray-200 text-gray-600 px-3 py-1.5 rounded-2xl text-xs',
+                error: 'inline-block bg-red-100 text-red-600 px-3 py-1.5 rounded-2xl text-xs'
+            };
+            row.className = kind === 'user' ? 'text-right' : 'text-left';
+            bubble.className = styles[kind] + ' whitespace-pre-line';
+            bubble.textContent = text; // textContent: nothing typed or returned is run as HTML
+            row.appendChild(bubble);
+            box.appendChild(row);
+            box.scrollTop = box.scrollHeight;
+            return row;
+        }
+
+        async function askCoach(question) {
+            if (!COACH_URL) { addChatBubble("The coach is not switched on yet.", 'error'); return; }
+            if (coachBusy) return;
+            if (coachFrames.length === 0 && !question) { return; }
+            coachBusy = true;
+            const waiting = addChatBubble(question ? "Coach is thinking..." : "Coach is reviewing your set...", 'wait');
+            try {
+                const seconds = lastSetSeconds;
+                const response = await fetch(COACH_URL + '/coach', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        exercise: document.getElementById('exercise-title').innerText,
+                        seconds,
+                        question: question || '',
+                        frames: coachFrames
+                    })
+                });
+                if (!response.ok) throw new Error('coach ' + response.status);
+                const data = await response.json();
+                waiting.remove();
+                addChatBubble(data.reply || "Keep your core tight and maintain your form!", 'coach');
+            } catch (error) {
+                console.error("Coach error:", error);
+                waiting.remove();
+                addChatBubble("Oops, couldn't reach the coach. Try again!", 'error');
+            }
+            coachBusy = false;
+        }
+
+        // Runs by itself when the timer ends; stays silent if the camera was off
+        function coachReview() {
+            if (coachFrames.length > 0) askCoach('');
+        }
+
+        function sendChatMessage() {
+            const inputField = document.getElementById('chat-input');
+            const userText = inputField.value.trim();
+            if (!userText) return;
+            addChatBubble(userText, 'user');
+            inputField.value = '';
+            askCoach(userText);
         }
 
         renderCalendar();
